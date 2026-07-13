@@ -1,0 +1,12 @@
+node_modules
+dist
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+.env
+.git
+.gitignore
+Dockerfile
+docker-compose.yml
+README*.md
