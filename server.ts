@@ -730,19 +730,22 @@ async function startServer() {
     res.json({ status: "success", fundingRates });
   });
 
-  // Save/update specialized api-credentials (Encrypted) - MODIFIED: DO NOT store actual apiKey and apiSecret for security
+  // Save/update specialized api-credentials (Encrypted)
   app.post("/api/api-credentials", (req, res) => {
     try {
-      const { accountName, baseUrl } = req.body;
+      const { accountName, apiKey, apiSecret, baseUrl } = req.body;
       if (!accountName) {
         return res.status(400).json({ error: "Missing required fields (accountName)" });
       }
 
-      // Out of security concerns, do NOT store apiKey and apiSecret. Store empty strings.
+      // Encrypt sensitive API key and secret before storing in SQLite
+      const encryptedKey = apiKey ? encrypt(apiKey) : "";
+      const encryptedSecret = apiSecret ? encrypt(apiSecret) : "";
+
       db.prepare(`
         INSERT OR REPLACE INTO api_credentials (account_name, api_key, api_secret, base_url)
-        VALUES (?, '', '', ?)
-      `).run(accountName, baseUrl || "https://fapi-gcp.binance.com");
+        VALUES (?, ?, ?, ?)
+      `).run(accountName, encryptedKey, encryptedSecret, baseUrl || "https://fapi-gcp.binance.com");
 
       res.json({ status: "success" });
     } catch (error: any) {
@@ -751,19 +754,35 @@ async function startServer() {
     }
   });
 
-  // Get all saved credentials - MODIFIED: Always return empty strings for apiKey/apiSecret for security
+  // Get all saved credentials with decryption
   app.get("/api/api-credentials", (req, res) => {
     try {
       const rows = db.prepare("SELECT * FROM api_credentials ORDER BY account_name ASC").all() as any[];
       const list = rows.map(r => ({
         accountName: r.account_name,
-        apiKey: "",
-        apiSecret: "",
+        apiKey: r.api_key ? decrypt(r.api_key) : "",
+        apiSecret: r.api_secret ? decrypt(r.api_secret) : "",
         baseUrl: r.base_url === "https://fapi.binance.com" ? "https://fapi-gcp.binance.com" : r.base_url
       }));
       res.json(list);
     } catch (error: any) {
       console.error("Failed to fetch api-credentials from DB:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Delete a saved credential
+  app.delete("/api/api-credentials", (req, res) => {
+    try {
+      const { accountName } = req.body;
+      if (!accountName) {
+        return res.status(400).json({ error: "Missing required fields (accountName)" });
+      }
+
+      db.prepare("DELETE FROM api_credentials WHERE account_name = ?").run(accountName);
+      res.json({ status: "success" });
+    } catch (error: any) {
+      console.error("Failed to delete api-credentials:", error);
       res.status(500).json({ error: error.message });
     }
   });

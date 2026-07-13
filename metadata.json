@@ -1,5 +1,6 @@
 {
   "name": "监控+干预+报表一体化完全版",
   "description": "A high-performance one-click trading dashboard with API configuration, custom risk parameters, and real-time position management.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

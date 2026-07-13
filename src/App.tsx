@@ -741,17 +741,29 @@ export default function App() {
     }
   }, []);
 
-  const fetchSavedApiAccounts = useCallback(async () => {
+  const fetchSavedApiAccounts = useCallback(async (autoSelectName?: string) => {
     try {
       const res = await fetch('/api/api-credentials');
       if (res.ok) {
         const list = await res.json();
         setSavedApiAccounts(list);
+        if (autoSelectName && list.length > 0) {
+          const matched = list.find((a: any) => a.accountName === autoSelectName);
+          if (matched) {
+            setApiConfig({
+              accountName: matched.accountName,
+              apiKey: matched.apiKey || '',
+              apiSecret: matched.apiSecret || '',
+              baseUrl: matched.baseUrl || 'https://fapi-gcp.binance.com'
+            });
+            addLog(`自动为账户 [${matched.accountName}] 加载安全加密的 API 凭证`, 'SUCCESS');
+          }
+        }
       }
     } catch (err) {
       console.error('Failed to fetch saved API accounts:', err);
     }
-  }, []);
+  }, [addLog]);
 
   const loadPositionHistory = useCallback(async (accountStr?: string) => {
     try {
@@ -904,6 +916,7 @@ export default function App() {
     
     const loadFromDb = async () => {
       try {
+        let activeAccountName = '';
         // 1. Fetch system settings
         const settingsRes = await fetch('/api/settings');
         if (settingsRes.ok) {
@@ -912,6 +925,7 @@ export default function App() {
           
           if (settings.apiConfig) {
             setApiConfig(settings.apiConfig);
+            activeAccountName = settings.apiConfig.accountName;
             addLog('从本地数据库 [settings 表] 成功加载了 API 配置以及代理端点', 'SUCCESS');
           }
           if (settings.activeRisk) {
@@ -956,7 +970,7 @@ export default function App() {
         }
         // Load available accounts
         fetchAvailableAccounts();
-        fetchSavedApiAccounts();
+        fetchSavedApiAccounts(activeAccountName);
       } catch (err) {
         console.error('Failed to load initial settings / history from DB:', err);
       } finally {
@@ -1117,18 +1131,20 @@ export default function App() {
         addLog('连接成功: 币安 API 验证通过', 'SUCCESS');
         addLog(`账户余额已同步: ${usdtAsset?.walletBalance || '0'} USDT`, 'INFO');
 
-        // Automatically save/persist the account name for easy switching later
+        // Automatically save/persist the account name and decrypted API credentials for easy switching later
         try {
           const saveRes = await fetch('/api/api-credentials', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               accountName: apiConfig.accountName,
+              apiKey: apiConfig.apiKey,
+              apiSecret: apiConfig.apiSecret,
               baseUrl: apiConfig.baseUrl
             })
           });
           if (saveRes.ok) {
-            addLog(`账户 [${apiConfig.accountName}] 已保存至账户列表中`, 'SUCCESS');
+            addLog(`账户 [${apiConfig.accountName}] 及其 API 凭证已安全保存至本地数据库`, 'SUCCESS');
             fetchSavedApiAccounts(); // refresh dropdown list
           }
         } catch (saveErr) {
@@ -4108,23 +4124,55 @@ export default function App() {
                     {showAccountDropdown && savedApiAccounts.length > 0 && (
                       <div className="absolute z-50 left-0 right-0 mt-1 max-h-60 overflow-y-auto bg-[#1C1C1E] border border-zinc-800 rounded shadow-xl divide-y divide-zinc-800 animate-in fade-in slide-in-from-top-1 duration-150">
                         {savedApiAccounts.map((acc, idx) => (
-                          <button
+                          <div
                             key={idx}
-                            type="button"
-                            className="w-full text-left px-3 py-2 text-xs text-zinc-300 hover:bg-[#252528] hover:text-white transition-colors flex justify-between items-center cursor-pointer"
-                            onClick={() => {
-                              setApiConfig({
-                                accountName: acc.accountName,
-                                apiKey: '',
-                                apiSecret: '',
-                                baseUrl: (acc.baseUrl === 'https://fapi.binance.com' || !acc.baseUrl) ? 'https://fapi-gcp.binance.com' : acc.baseUrl
-                              });
-                              setShowAccountDropdown(false);
-                              addLog(`已加载账号 [${acc.accountName}]。安全考虑，请手动输入其 API Key 和 API Secret 进行验证连接`, 'INFO');
-                            }}
+                            className="w-full flex items-center justify-between hover:bg-[#252528] transition-colors divide-x divide-zinc-800/50"
                           >
-                            <span>{acc.accountName}</span>
-                          </button>
+                            <button
+                              type="button"
+                              className="flex-1 text-left px-3 py-2 text-xs text-zinc-300 hover:text-white cursor-pointer"
+                              onClick={() => {
+                                setApiConfig({
+                                  accountName: acc.accountName,
+                                  apiKey: acc.apiKey || '',
+                                  apiSecret: acc.apiSecret || '',
+                                  baseUrl: (acc.baseUrl === 'https://fapi.binance.com' || !acc.baseUrl) ? 'https://fapi-gcp.binance.com' : acc.baseUrl
+                                });
+                                setShowAccountDropdown(false);
+                                addLog(`已切换并自动加载账户 [${acc.accountName}] 及其 API 凭证`, 'SUCCESS');
+                              }}
+                            >
+                              <span>{acc.accountName}</span>
+                            </button>
+                            <button
+                              type="button"
+                              className="px-2.5 py-2 text-zinc-500 hover:text-red-500 hover:bg-red-500/10 cursor-pointer transition-colors"
+                              title="删除此账户"
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                if (window.confirm(`确定要从本地数据库中删除账户 [${acc.accountName}] 吗？`)) {
+                                  try {
+                                    const delRes = await fetch('/api/api-credentials', {
+                                      method: 'DELETE',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ accountName: acc.accountName })
+                                    });
+                                    if (delRes.ok) {
+                                      addLog(`已成功从本地数据库删除账户 [${acc.accountName}]`, 'SUCCESS');
+                                      fetchSavedApiAccounts();
+                                    } else {
+                                      addLog(`删除账户 [${acc.accountName}] 失败`, 'ERROR');
+                                    }
+                                  } catch (err: any) {
+                                    console.error('Failed to delete account:', err);
+                                    addLog(`删除账户出错: ${err.message}`, 'ERROR');
+                                  }
+                                }
+                              }}
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
                         ))}
                       </div>
                     )}
