@@ -151,6 +151,26 @@ const CustomTrendTooltip = ({ active, payload, opacity }: any) => {
 };
 
 export default function App() {
+  // Gatekeeper states
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    return localStorage.getItem('gatekeeper_auth') === 'true';
+  });
+  const [gatekeeperPassword, setGatekeeperPassword] = useState('');
+  const [showGatekeeperPass, setShowGatekeeperPass] = useState(false);
+  const [gatekeeperError, setGatekeeperError] = useState('');
+
+  const handleGatekeeperLogin = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (gatekeeperPassword === 'Xiemac123!') {
+      setIsAuthenticated(true);
+      localStorage.setItem('gatekeeper_auth', 'true');
+      setGatekeeperError('');
+      setGatekeeperPassword('');
+    } else {
+      setGatekeeperError('安全密码错误，请重新输入');
+    }
+  };
+
   // State
   const [activeMainTab, setActiveMainTab] = useState<'TRADE' | 'MONITOR' | 'REPORT'>('TRADE');
   const [positionHistory, setPositionHistory] = useState<PositionHistory[]>([]);
@@ -3817,6 +3837,120 @@ export default function App() {
     );
   };
 
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-[#0A0A0B] text-zinc-100 flex items-center justify-center p-4 md:p-8 font-sans relative overflow-hidden select-none">
+        {/* Geometric Background Grid */}
+        <div className="absolute inset-0 bg-[linear-gradient(to_right,#141416_1px,transparent_1px),linear-gradient(to_bottom,#141416_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_0%,#000_70%,transparent_100%)] opacity-30" />
+        
+        {/* Glow Spheres */}
+        <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-[#388e3c]/10 rounded-full blur-[120px] pointer-events-none" />
+        <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-[#ff8a65]/10 rounded-full blur-[120px] pointer-events-none" />
+
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6, ease: "easeOut" }}
+          className="relative max-w-md w-full"
+        >
+          {/* Main Card */}
+          <div className="bg-[#141416]/90 border border-zinc-800/80 rounded-2xl p-8 shadow-2xl backdrop-blur-md relative overflow-hidden">
+            {/* Top Colored Bar Accent */}
+            <div className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-[#388e3c] via-[#ff8a65] to-[#039be5]" />
+
+            <div className="flex flex-col items-center text-center space-y-6">
+              {/* Pulsing Shield Icon Container */}
+              <div className="relative">
+                <div className="absolute inset-0 bg-[#388e3c]/20 rounded-full blur-xl animate-pulse" />
+                <div className="relative p-5 bg-zinc-900/90 border border-zinc-800 rounded-2xl shadow-inner text-[#388e3c]">
+                  <Shield size={36} className="animate-pulse" />
+                </div>
+              </div>
+
+              {/* Typography info */}
+              <div className="space-y-2">
+                <h2 className="text-2xl font-bold tracking-tight text-white font-sans">
+                  AI 量化终端安全门卫
+                </h2>
+                <p className="text-xs text-zinc-400 font-medium">
+                  GATEKEEPER SECURITY BARRIER
+                </p>
+                <p className="text-[13px] text-zinc-500 max-w-[280px] mx-auto pt-1 leading-relaxed">
+                  本终端已启用安全门卫，请在下方输入授权密码解锁全栈交易与监控面板
+                </p>
+              </div>
+
+              {/* Form Input */}
+              <form onSubmit={handleGatekeeperLogin} className="w-full space-y-4 pt-2">
+                <div className="space-y-1.5 text-left">
+                  <label className="text-xs text-zinc-400 font-semibold font-sans flex items-center gap-1.5 pl-0.5">
+                    <Key size={12} className="text-[#388e3c]" />
+                    <span>安全密码 (Password)</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showGatekeeperPass ? "text" : "password"}
+                      value={gatekeeperPassword}
+                      onChange={(e) => {
+                        setGatekeeperPassword(e.target.value);
+                        if (gatekeeperError) setGatekeeperError('');
+                      }}
+                      placeholder="••••••••••••••"
+                      autoFocus
+                      className={`w-full bg-zinc-950/80 border text-zinc-100 placeholder-zinc-700 rounded-xl py-3 pl-4 pr-11 text-sm font-mono tracking-widest focus:outline-none focus:ring-1 transition-all ${
+                        gatekeeperError 
+                          ? 'border-red-500/50 focus:border-red-500 focus:ring-red-500/20' 
+                          : 'border-zinc-800 focus:border-[#388e3c] focus:ring-[#388e3c]/20'
+                      }`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowGatekeeperPass(!showGatekeeperPass)}
+                      className="absolute right-3.5 top-3.5 text-zinc-500 hover:text-zinc-300 transition-colors p-0.5"
+                    >
+                      {showGatekeeperPass ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                  
+                  {/* Password Error Message */}
+                  <AnimatePresence>
+                    {gatekeeperError && (
+                      <motion.div
+                        initial={{ opacity: 0, y: -5 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -5 }}
+                        className="flex items-center gap-1.5 text-red-500 text-xs mt-1.5 font-medium pl-0.5"
+                      >
+                        <ShieldAlert size={13} className="shrink-0" />
+                        <span>{gatekeeperError}</span>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+
+                {/* Unlock Button */}
+                <button
+                  type="submit"
+                  className="w-full bg-[#388e3c] hover:bg-[#2e7d32] text-white py-3 rounded-xl font-bold text-sm tracking-wide shadow-lg shadow-[#388e3c]/10 active:scale-[0.98] active:bg-[#1b5e20] transition-all cursor-pointer flex items-center justify-center gap-2 mt-2"
+                >
+                  <Shield size={16} className="text-emerald-100" />
+                  <span>验证并解锁终端</span>
+                </button>
+              </form>
+
+              {/* Help & Hints */}
+              <div className="pt-4 border-t border-zinc-900/60 w-full flex flex-col items-center gap-1.5">
+                <span className="text-[10px] text-zinc-600 font-mono tracking-wider">
+                  SYSTEM VERSION: v1.1.0-STABLE
+                </span>
+              </div>
+            </div>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen pt-4 pb-20 px-4 md:px-8 xl:px-12 w-full space-y-6">
       {/* Header */}
@@ -3963,6 +4097,20 @@ export default function App() {
             <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`} />
             <span className="text-xs font-medium uppercase">{isConnected ? '已连接' : '未连接'}</span>
           </div>
+
+          <button
+            onClick={() => {
+              setIsAuthenticated(false);
+              localStorage.removeItem('gatekeeper_auth');
+              addLog('[系统] 安全登出，门卫系统已锁定终端。', 'INFO');
+            }}
+            id="btn-gatekeeper-lock"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-950 hover:bg-zinc-900 border border-[#232326] text-zinc-400 hover:text-zinc-200 active:scale-[0.97] transition-all rounded-md cursor-pointer"
+            title="安全锁定 / 退出登录"
+          >
+            <Shield size={14} className="text-zinc-500" />
+            <span className="text-xs font-semibold">锁定</span>
+          </button>
         </div>
       </header>
 
