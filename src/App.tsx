@@ -307,6 +307,144 @@ export default function App() {
     });
   }, []);
 
+  // Drag to pan support
+  const trendDragStartRef = useRef<{ x: number; startIndex: number } | null>(null);
+  const streakDragStartRef = useRef<{ x: number; startIndex: number } | null>(null);
+
+  const handleTrendMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return; // Only left-click drags
+    const viewLen = trendZoomInfo.viewLen || trendCandles.length;
+    if (viewLen >= trendCandles.length) return; // No need to pan if fully zoomed out
+    trendDragStartRef.current = {
+      x: e.clientX,
+      startIndex: trendZoomInfo.startIndex || 0
+    };
+  };
+
+  const handleTrendMouseMove = (e: React.MouseEvent) => {
+    if (!trendDragStartRef.current || trendCandles.length === 0) return;
+    const viewLen = trendZoomInfo.viewLen || trendCandles.length;
+    const containerWidth = trendContainerRef.current?.getBoundingClientRect().width || 800;
+    const pointsPerPixel = viewLen / containerWidth;
+    
+    const deltaX = e.clientX - trendDragStartRef.current.x;
+    const indexOffset = Math.round(deltaX * pointsPerPixel);
+    let newStartIndex = trendDragStartRef.current.startIndex - indexOffset;
+    
+    newStartIndex = Math.max(0, Math.min(trendCandles.length - viewLen, newStartIndex));
+    
+    setTrendZoomInfo(prev => ({
+      ...prev,
+      startIndex: newStartIndex
+    }));
+  };
+
+  const handleTrendMouseUpOrLeave = () => {
+    trendDragStartRef.current = null;
+  };
+
+  const handleStreakMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    const viewLen = streakZoomInfo.viewLen || chartData.length;
+    if (viewLen >= chartData.length) return; // No need to pan if fully zoomed out
+    streakDragStartRef.current = {
+      x: e.clientX,
+      startIndex: streakZoomInfo.startIndex || 0
+    };
+  };
+
+  const handleStreakMouseMove = (e: React.MouseEvent) => {
+    if (!streakDragStartRef.current || chartData.length === 0) return;
+    const viewLen = streakZoomInfo.viewLen || chartData.length;
+    const containerWidth = streakContainerRef.current?.getBoundingClientRect().width || 800;
+    const pointsPerPixel = viewLen / containerWidth;
+    
+    const deltaX = e.clientX - streakDragStartRef.current.x;
+    const indexOffset = Math.round(deltaX * pointsPerPixel);
+    let newStartIndex = streakDragStartRef.current.startIndex - indexOffset;
+    
+    newStartIndex = Math.max(0, Math.min(chartData.length - viewLen, newStartIndex));
+    
+    setStreakZoomInfo(prev => ({
+      ...prev,
+      startIndex: newStartIndex
+    }));
+  };
+
+  const handleStreakMouseUpOrLeave = () => {
+    streakDragStartRef.current = null;
+  };
+
+  // Touch / Swipe support
+  const trendTouchStartRef = useRef<{ x: number; startIndex: number } | null>(null);
+  const streakTouchStartRef = useRef<{ x: number; startIndex: number } | null>(null);
+
+  const handleTrendTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length !== 1) return;
+    const viewLen = trendZoomInfo.viewLen || trendCandles.length;
+    if (viewLen >= trendCandles.length) return;
+    trendTouchStartRef.current = {
+      x: e.touches[0].clientX,
+      startIndex: trendZoomInfo.startIndex || 0
+    };
+  };
+
+  const handleTrendTouchMove = (e: React.TouchEvent) => {
+    if (!trendTouchStartRef.current || trendCandles.length === 0) return;
+    if (e.touches.length !== 1) return;
+    const viewLen = trendZoomInfo.viewLen || trendCandles.length;
+    const containerWidth = trendContainerRef.current?.getBoundingClientRect().width || 800;
+    const pointsPerPixel = viewLen / containerWidth;
+    
+    const deltaX = e.touches[0].clientX - trendTouchStartRef.current.x;
+    const indexOffset = Math.round(deltaX * pointsPerPixel);
+    let newStartIndex = trendTouchStartRef.current.startIndex - indexOffset;
+    
+    newStartIndex = Math.max(0, Math.min(trendCandles.length - viewLen, newStartIndex));
+    
+    setTrendZoomInfo(prev => ({
+      ...prev,
+      startIndex: newStartIndex
+    }));
+  };
+
+  const handleTrendTouchEnd = () => {
+    trendTouchStartRef.current = null;
+  };
+
+  const handleStreakTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length !== 1) return;
+    const viewLen = streakZoomInfo.viewLen || chartData.length;
+    if (viewLen >= chartData.length) return;
+    streakTouchStartRef.current = {
+      x: e.touches[0].clientX,
+      startIndex: streakZoomInfo.startIndex || 0
+    };
+  };
+
+  const handleStreakTouchMove = (e: React.TouchEvent) => {
+    if (!streakTouchStartRef.current || chartData.length === 0) return;
+    if (e.touches.length !== 1) return;
+    const viewLen = streakZoomInfo.viewLen || chartData.length;
+    const containerWidth = streakContainerRef.current?.getBoundingClientRect().width || 800;
+    const pointsPerPixel = viewLen / containerWidth;
+    
+    const deltaX = e.touches[0].clientX - streakTouchStartRef.current.x;
+    const indexOffset = Math.round(deltaX * pointsPerPixel);
+    let newStartIndex = streakTouchStartRef.current.startIndex - indexOffset;
+    
+    newStartIndex = Math.max(0, Math.min(chartData.length - viewLen, newStartIndex));
+    
+    setStreakZoomInfo(prev => ({
+      ...prev,
+      startIndex: newStartIndex
+    }));
+  };
+
+  const handleStreakTouchEnd = () => {
+    streakTouchStartRef.current = null;
+  };
+
 
   const [serverIp, setServerIp] = useState<string>('未获取 (开启点击后刷新)');
   const [isQueryingIp, setIsQueryingIp] = useState<boolean>(false);
@@ -2993,83 +3131,118 @@ export default function App() {
                 </div>
 
                 {/* Right: The Dynamic Chart Canvas */}
-                <div 
-                  ref={trendContainerRef}
-                  onMouseEnter={() => setIsTrendHovered(true)}
-                  onMouseLeave={() => setIsTrendHovered(false)}
-                  className="lg:col-span-7 h-[380px] w-full border border-zinc-800/40 rounded-xl bg-[#141416]/20 p-2 relative"
-                >
-                  {visibleTrendCandles.length === 0 ? (
-                    <div className="h-full flex flex-col items-center justify-center p-6 text-zinc-500 italic border border-zinc-950/40 rounded-xl bg-[#141416]/20 text-center">
-                      <TrendingUp size={24} className="mb-2 text-emerald-500 animate-pulse" />
-                      <span className="text-sm">暂无分析数据。请选择账户并点击右上方的 K线 周期按钮（如「1小时」、「4小时」、「日线」、「周线」、「月线」）来主动对选中账户的“仓位历史记录”进行数据分析。</span>
+                <div className="lg:col-span-7 flex flex-col gap-2">
+                  <div 
+                    ref={trendContainerRef}
+                    onMouseEnter={() => setIsTrendHovered(true)}
+                    onMouseLeave={() => setIsTrendHovered(false)}
+                    onMouseDown={handleTrendMouseDown}
+                    onMouseMove={handleTrendMouseMove}
+                    onMouseUp={handleTrendMouseUpOrLeave}
+                    onTouchStart={handleTrendTouchStart}
+                    onTouchMove={handleTrendTouchMove}
+                    onTouchEnd={handleTrendTouchEnd}
+                    className="h-[380px] w-full border border-zinc-800/40 rounded-xl bg-[#141416]/20 p-2 relative cursor-grab active:cursor-grabbing select-none"
+                  >
+                    {visibleTrendCandles.length === 0 ? (
+                      <div className="h-full flex flex-col items-center justify-center p-6 text-zinc-500 italic border border-zinc-950/40 rounded-xl bg-[#141416]/20 text-center">
+                        <TrendingUp size={24} className="mb-2 text-emerald-500 animate-pulse" />
+                        <span className="text-sm">暂无分析数据。请选择账户并点击右上方的 K线 周期按钮（如「1小时」、「4小时」、「日线」、「周线」、「月线」）来主动对选中账户的“仓位历史记录”进行数据 analysis。</span>
+                      </div>
+                    ) : (
+                      <ResponsiveContainer width="100%" height="100%">
+                        {trendChartType === 'candle' ? (
+                          <BarChart data={visibleTrendCandles} margin={{ top: 20, right: 10, left: 0, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#232326" vertical={false} />
+                            <XAxis 
+                              dataKey="name" 
+                              stroke="#52525b" 
+                              fontSize={9} 
+                              tickLine={false} 
+                              axisLine={false}
+                              dy={6}
+                            />
+                            <YAxis 
+                              stroke="#52525b" 
+                              fontSize={9} 
+                              tickLine={false} 
+                              axisLine={false}
+                              domain={['auto', 'auto']}
+                              tickFormatter={(v) => Number(v).toFixed(0)}
+                            />
+                            <Tooltip content={<CustomTrendTooltip opacity={trendOpacity} />} cursor={{ fill: 'rgba(255, 255, 255, 0.03)' }} />
+                            <Bar 
+                              dataKey="range" 
+                              shape={<Candlestick />} 
+                              isAnimationActive={false}
+                            />
+                          </BarChart>
+                        ) : (
+                          <AreaChart data={visibleTrendCandles} margin={{ top: 20, right: 10, left: 0, bottom: 0 }}>
+                            <defs>
+                              <linearGradient id="balanceTrendGrad" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#10B981" stopOpacity={0.25}/>
+                                <stop offset="95%" stopColor="#10B981" stopOpacity={0}/>
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#232326" vertical={false} />
+                            <XAxis 
+                              dataKey="name" 
+                              stroke="#52525b" 
+                              fontSize={9} 
+                              tickLine={false} 
+                              axisLine={false}
+                              dy={6}
+                            />
+                            <YAxis 
+                              stroke="#52525b" 
+                              fontSize={9} 
+                              tickLine={false} 
+                              axisLine={false}
+                              domain={['auto', 'auto']}
+                              tickFormatter={(v) => Number(v).toFixed(0)}
+                            />
+                            <Tooltip content={<CustomTrendTooltip opacity={trendOpacity} />} cursor={{ stroke: 'rgba(16, 185, 129, 0.2)', strokeWidth: 1 }} />
+                            <Area 
+                              type="monotone" 
+                              dataKey="close" 
+                              stroke="#10B981" 
+                              strokeWidth={2} 
+                              fillOpacity={1} 
+                              fill="url(#balanceTrendGrad)" 
+                              isAnimationActive={false}
+                            />
+                          </AreaChart>
+                        )}
+                      </ResponsiveContainer>
+                    )}
+                  </div>
+
+                  {/* Range scroll/pan slider */}
+                  {trendCandles.length > 0 && (
+                    <div className="flex items-center gap-3 px-4 py-2.5 bg-[#141416]/40 border border-zinc-800/40 rounded-xl text-xs text-zinc-400">
+                      <span className="font-mono font-medium select-none text-zinc-400 flex items-center gap-1.5 shrink-0">
+                        <span>滑动查看:</span>
+                      </span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={Math.max(0, trendCandles.length - (trendZoomInfo.viewLen || trendCandles.length))}
+                        value={trendZoomInfo.startIndex || 0}
+                        disabled={(trendZoomInfo.viewLen || trendCandles.length) >= trendCandles.length}
+                        onChange={(e) => {
+                          const val = Number(e.target.value);
+                          setTrendZoomInfo(prev => ({
+                            ...prev,
+                            startIndex: val
+                          }));
+                        }}
+                        className="flex-1 h-1 bg-[#232326] rounded-lg appearance-none cursor-pointer accent-emerald-500 disabled:opacity-30 disabled:cursor-not-allowed"
+                      />
+                      <span className="font-mono text-[11px] text-zinc-500 select-none shrink-0">
+                        {trendZoomInfo.startIndex || 0} - {Math.min(trendCandles.length, (trendZoomInfo.startIndex || 0) + (trendZoomInfo.viewLen || trendCandles.length))} / {trendCandles.length} 根
+                      </span>
                     </div>
-                  ) : (
-                    <ResponsiveContainer width="100%" height="100%">
-                      {trendChartType === 'candle' ? (
-                        <BarChart data={visibleTrendCandles} margin={{ top: 20, right: 10, left: 0, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#232326" vertical={false} />
-                          <XAxis 
-                            dataKey="name" 
-                            stroke="#52525b" 
-                            fontSize={9} 
-                            tickLine={false} 
-                            axisLine={false}
-                            dy={6}
-                          />
-                          <YAxis 
-                            stroke="#52525b" 
-                            fontSize={9} 
-                            tickLine={false} 
-                            axisLine={false}
-                            domain={['auto', 'auto']}
-                            tickFormatter={(v) => Number(v).toFixed(0)}
-                          />
-                          <Tooltip content={<CustomTrendTooltip opacity={trendOpacity} />} cursor={{ fill: 'rgba(255, 255, 255, 0.03)' }} />
-                          <Bar 
-                            dataKey="range" 
-                            shape={<Candlestick />} 
-                            isAnimationActive={false}
-                          />
-                        </BarChart>
-                      ) : (
-                        <AreaChart data={visibleTrendCandles} margin={{ top: 20, right: 10, left: 0, bottom: 0 }}>
-                          <defs>
-                            <linearGradient id="balanceTrendGrad" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#10B981" stopOpacity={0.25}/>
-                              <stop offset="95%" stopColor="#10B981" stopOpacity={0}/>
-                            </linearGradient>
-                          </defs>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#232326" vertical={false} />
-                          <XAxis 
-                            dataKey="name" 
-                            stroke="#52525b" 
-                            fontSize={9} 
-                            tickLine={false} 
-                            axisLine={false}
-                            dy={6}
-                          />
-                          <YAxis 
-                            stroke="#52525b" 
-                            fontSize={9} 
-                            tickLine={false} 
-                            axisLine={false}
-                            domain={['auto', 'auto']}
-                            tickFormatter={(v) => Number(v).toFixed(0)}
-                          />
-                          <Tooltip content={<CustomTrendTooltip opacity={trendOpacity} />} cursor={{ stroke: 'rgba(16, 185, 129, 0.2)', strokeWidth: 1 }} />
-                          <Area 
-                            type="monotone" 
-                            dataKey="close" 
-                            stroke="#10B981" 
-                            strokeWidth={2} 
-                            fillOpacity={1} 
-                            fill="url(#balanceTrendGrad)" 
-                            isAnimationActive={false}
-                          />
-                        </AreaChart>
-                      )}
-                    </ResponsiveContainer>
                   )}
                 </div>
               </div>
@@ -3147,52 +3320,87 @@ export default function App() {
             </div>
             
             {isStreakChartVisible && (
-              <div 
-                ref={streakContainerRef}
-                onMouseEnter={() => setIsStreakHovered(true)}
-                onMouseLeave={() => setIsStreakHovered(false)}
-                className="h-[350px] w-full border border-zinc-800/40 rounded-xl bg-[#141416]/20 p-2 relative"
-              >
-                {visibleStreakData.length === 0 ? (
-                  <div className="h-full flex items-center justify-center text-zinc-600 italic">
-                    暂无历史数据，请先进行交易
+              <div className="flex flex-col gap-2 w-full">
+                <div 
+                  ref={streakContainerRef}
+                  onMouseEnter={() => setIsStreakHovered(true)}
+                  onMouseLeave={() => setIsStreakHovered(false)}
+                  onMouseDown={handleStreakMouseDown}
+                  onMouseMove={handleStreakMouseMove}
+                  onMouseUp={handleStreakMouseUpOrLeave}
+                  onTouchStart={handleStreakTouchStart}
+                  onTouchMove={handleStreakTouchMove}
+                  onTouchEnd={handleStreakTouchEnd}
+                  className="h-[350px] w-full border border-zinc-800/40 rounded-xl bg-[#141416]/20 p-2 relative cursor-grab active:cursor-grabbing select-none"
+                >
+                  {visibleStreakData.length === 0 ? (
+                    <div className="h-full flex items-center justify-center text-zinc-600 italic">
+                      暂无历史数据，请先进行交易
+                    </div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={visibleStreakData} margin={{ top: 20, right: 30, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#232326" vertical={false} />
+                        <XAxis 
+                          dataKey="name" 
+                          stroke="#52525b" 
+                          fontSize={10} 
+                          tickLine={false} 
+                          axisLine={false}
+                        />
+                        <YAxis 
+                          stroke="#52525b" 
+                          fontSize={10} 
+                          tickLine={false} 
+                          axisLine={false}
+                          allowDecimals={false}
+                        />
+                        <Tooltip 
+                          contentStyle={{ backgroundColor: '#141416', border: '1px solid #232326', borderRadius: '8px' }}
+                          cursor={{ fill: 'rgba(255, 255, 255, 0.05)' }}
+                          formatter={(value: any, name: any, props: any) => [value, props.payload.isWin ? '连续盈利次数' : '连续亏损次数']}
+                        />
+                        <Bar 
+                          dataKey="count" 
+                          radius={[4, 4, 0, 0]} 
+                          barSize={Math.min(60, 800 / visibleStreakData.length)}
+                          isAnimationActive={false}
+                        >
+                          {visibleStreakData.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={entry.color} />
+                          ))}
+                          <LabelList dataKey="count" position="top" fill="#fff" fontSize={12} offset={10} />
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
+
+                {/* Range scroll/pan slider for Streak Chart */}
+                {chartData.length > 0 && (
+                  <div className="flex items-center gap-3 px-4 py-2.5 bg-[#141416]/40 border border-zinc-800/40 rounded-xl text-xs text-zinc-400">
+                    <span className="font-mono font-medium select-none text-zinc-400 flex items-center gap-1.5 shrink-0">
+                      <span>滑动查看:</span>
+                    </span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={Math.max(0, chartData.length - (streakZoomInfo.viewLen || chartData.length))}
+                      value={streakZoomInfo.startIndex || 0}
+                      disabled={(streakZoomInfo.viewLen || chartData.length) >= chartData.length}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setStreakZoomInfo(prev => ({
+                          ...prev,
+                          startIndex: val
+                        }));
+                      }}
+                      className="flex-1 h-1 bg-[#232326] rounded-lg appearance-none cursor-pointer accent-emerald-500 disabled:opacity-30 disabled:cursor-not-allowed"
+                    />
+                    <span className="font-mono text-[11px] text-zinc-500 select-none shrink-0">
+                      {streakZoomInfo.startIndex || 0} - {Math.min(chartData.length, (streakZoomInfo.startIndex || 0) + (streakZoomInfo.viewLen || chartData.length))} / {chartData.length} 次
+                    </span>
                   </div>
-                ) : (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={visibleStreakData} margin={{ top: 20, right: 30, left: 0, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#232326" vertical={false} />
-                      <XAxis 
-                        dataKey="name" 
-                        stroke="#52525b" 
-                        fontSize={10} 
-                        tickLine={false} 
-                        axisLine={false}
-                      />
-                      <YAxis 
-                        stroke="#52525b" 
-                        fontSize={10} 
-                        tickLine={false} 
-                        axisLine={false}
-                        allowDecimals={false}
-                      />
-                      <Tooltip 
-                        contentStyle={{ backgroundColor: '#141416', border: '1px solid #232326', borderRadius: '8px' }}
-                        cursor={{ fill: 'rgba(255, 255, 255, 0.05)' }}
-                        formatter={(value: any, name: any, props: any) => [value, props.payload.isWin ? '连续盈利次数' : '连续亏损次数']}
-                      />
-                      <Bar 
-                        dataKey="count" 
-                        radius={[4, 4, 0, 0]} 
-                        barSize={Math.min(60, 800 / visibleStreakData.length)}
-                        isAnimationActive={false}
-                      >
-                        {visibleStreakData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={entry.color} />
-                        ))}
-                        <LabelList dataKey="count" position="top" fill="#fff" fontSize={12} offset={10} />
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
                 )}
               </div>
             )}

@@ -591,6 +591,557 @@ function runBackgroundMonitor() {
 
 runBackgroundMonitor();
 
+// Background Daily Auto-Sync Engine
+async function binanceSignedRequest(endpoint: string, params: Record<string, any>, apiKey: string, apiSecret: string, baseUrl: string) {
+  const timestamp = Date.now();
+  const baseParams = {
+    ...params,
+    timestamp: timestamp.toString()
+  };
+  const queryString = new URLSearchParams(baseParams).toString();
+  const signature = CryptoJS.HmacSHA256(queryString, apiSecret).toString(CryptoJS.enc.Hex);
+  
+  let targetBaseUrl = baseUrl;
+  if (targetBaseUrl.includes("fapi.binance.com")) {
+    targetBaseUrl = targetBaseUrl.replace("fapi.binance.com", "fapi-gcp.binance.com");
+  }
+  if (targetBaseUrl.includes("api.binance.com")) {
+    targetBaseUrl = targetBaseUrl.replace("api.binance.com", "api-gcp.binance.com");
+  }
+
+  const isFutures = endpoint.includes('/fapi/') || targetBaseUrl.includes('fapi');
+  const candidates = isFutures 
+    ? [
+        "https://fapi-gcp.binance.com",
+        "https://fapi.binance.com",
+        "https://fapi1.binance.com",
+        "https://fapi2.binance.com",
+        "https://fapi3.binance.com",
+        "https://fapi4.binance.com"
+      ]
+    : [
+        "https://api-gcp.binance.com",
+        "https://api.binance.com",
+        "https://api1.binance.com",
+        "https://api2.binance.com",
+        "https://api3.binance.com"
+      ];
+
+  const uniqueCandidates = [targetBaseUrl, ...candidates.filter(c => c !== targetBaseUrl)];
+
+  let lastError: any = null;
+  for (const currentBase of uniqueCandidates) {
+    try {
+      const currentUrl = `${currentBase}${endpoint}?${queryString}&signature=${signature}`;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      
+      const res = await fetch(currentUrl, {
+        method: "GET",
+        headers: {
+          "X-MBX-APIKEY": apiKey,
+          "Content-Type": "application/json"
+        },
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      
+      const responseText = await res.text();
+      if (!res.ok) {
+        throw new Error(`Binance API error (status ${res.status}): ${responseText}`);
+      }
+      
+      return JSON.parse(responseText);
+    } catch (err: any) {
+      console.warn(`[Auto Sync Fetch Warning] Failed with ${currentBase}: ${err.message}`);
+      lastError = err;
+    }
+  }
+  throw lastError || new Error(`Failed to request ${endpoint} across all bases`);
+}
+
+async function binanceSignedRequestWithRetry(
+  endpoint: string,
+  params: Record<string, any>,
+  apiKey: string,
+  apiSecret: string,
+  baseUrl: string,
+  maxRetries = 4,
+  initialDelay = 1500
+): Promise<any> {
+  let attempt = 0;
+  while (true) {
+    try {
+      const data = await binanceSignedRequest(endpoint, params, apiKey, apiSecret, baseUrl);
+      return data;
+    } catch (error: any) {
+      const isRateLimit = error.message && (
+        error.message.includes('429') || 
+        error.message.includes('418') || 
+        error.message.includes('-1003')
+      );
+      
+      attempt++;
+      if (attempt >= maxRetries) {
+        throw error;
+      }
+      
+      const delay = initialDelay * Math.pow(2, attempt - 1) + Math.random() * 500;
+      console.log(`[Auto Sync Rate Limit] Attempt ${attempt}/${maxRetries} failed. Retrying in ${Math.round(delay)}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+}
+
+async function executeDailyAutoSync(syncTimezone: string, localNow: Date, cstNow: Date) {
+  let targetPrevDayStart = 0;
+  let targetPrevDayEnd = 0;
+
+  if (syncTimezone.includes("Local")) {
+    const prevDay = new Date(localNow.getTime() - 24 * 60 * 60 * 1000);
+    prevDay.setHours(0, 0, 0, 0);
+    targetPrevDayStart = prevDay.getTime();
+    
+    const prevDayEnd = new Date(prevDay);
+    prevDayEnd.setHours(23, 59, 59, 999);
+    targetPrevDayEnd = prevDayEnd.getTime();
+  } else {
+    // CST (UTC+8)
+    const prevDayCst = new Date(cstNow.getTime() - 24 * 60 * 60 * 1000);
+    const cstYear = prevDayCst.getFullYear();
+    const cstMonth = prevDayCst.getMonth();
+    const cstDate = prevDayCst.getDate();
+    
+    targetPrevDayStart = Date.UTC(cstYear, cstMonth, cstDate, 0, 0, 0, 0) - 8 * 60 * 60 * 1000;
+    targetPrevDayEnd = Date.UTC(cstYear, cstMonth, cstDate, 23, 59, 59, 999) - 8 * 60 * 60 * 1000;
+  }
+
+  const startTimeStr = new Date(targetPrevDayStart).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+  const endTimeStr = new Date(targetPrevDayEnd).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+  addMonitorLog(`[Auto Sync] 正在开始自动拉取各账户上一日数据：从 ${startTimeStr} 到 ${endTimeStr}`, "INFO");
+
+  // Fetch all accounts
+  const accounts = db.prepare("SELECT * FROM api_credentials ORDER BY account_name ASC").all() as any[];
+  if (accounts.length === 0) {
+    addMonitorLog("[Auto Sync] 未检测到任何已配置的 API 账户，跳过本次自动同步。", "INFO");
+    return;
+  }
+
+  addMonitorLog(`[Auto Sync] 检测到 ${accounts.length} 个账户。将按照「逐一同步」顺序，执行链式数据拉取与对账。`, "INFO");
+
+  for (let i = 0; i < accounts.length; i++) {
+    const acc = accounts[i];
+    const accountName = acc.account_name;
+    addMonitorLog(`[Auto Sync] [${i+1}/${accounts.length}] 正在启动账户 [${accountName}] 的对账分析...`, "INFO");
+
+    try {
+      const apiKey = acc.api_key ? decrypt(acc.api_key) : "";
+      const apiSecret = acc.api_secret ? decrypt(acc.api_secret) : "";
+      const baseUrl = acc.base_url || "https://fapi-gcp.binance.com";
+
+      if (!apiKey || !apiSecret) {
+        addMonitorLog(`[Auto Sync] 账户 [${accountName}] 缺少有效的 API 密钥，已自动跳过。`, "ERROR");
+        continue;
+      }
+
+      // Step 1: Get active position list to exclude from history closed positions matching
+      let activePositions: { symbol: string, side: 'BUY' | 'SELL', amount: number }[] = [];
+      try {
+        const posData = await binanceSignedRequestWithRetry('/fapi/v2/positionRisk', {}, apiKey, apiSecret, baseUrl);
+        if (Array.isArray(posData)) {
+          activePositions = posData
+            .filter((p: any) => parseFloat(p.positionAmt) !== 0)
+            .map((p: any) => ({
+              symbol: p.symbol.toUpperCase(),
+              side: parseFloat(p.positionAmt) > 0 ? 'BUY' : 'SELL',
+              amount: Math.abs(parseFloat(p.positionAmt))
+            }));
+        }
+      } catch (err: any) {
+        addMonitorLog(`[Auto Sync] [${accountName}] 获取持仓信息失败: ${err.message || err}。将默认完整对账全部成交。`, "INFO");
+      }
+
+      // Step 2: Fetch income streams (realized pnl, commissions, funding fee)
+      let allIncome: any[] = [];
+      try {
+        const incomeData = await binanceSignedRequestWithRetry('/fapi/v1/income', {
+          startTime: targetPrevDayStart,
+          endTime: targetPrevDayEnd,
+          limit: 1000
+        }, apiKey, apiSecret, baseUrl);
+        if (Array.isArray(incomeData)) {
+          allIncome = incomeData;
+        }
+      } catch (err: any) {
+        addMonitorLog(`[Auto Sync] [${accountName}] 抓取收入流水失败: ${err.message || err}。跳过该账户。`, "ERROR");
+        continue;
+      }
+
+      // Extract active traded symbols from income record
+      const activeSymbolsSet = new Set<string>(
+        allIncome
+          .filter(inc => inc.incomeType === 'REALIZED_PNL' || inc.incomeType === 'COMMISSION')
+          .map(inc => inc.symbol.toUpperCase())
+      );
+      activePositions.forEach(p => activeSymbolsSet.add(p.symbol));
+      const activeSymbols = Array.from(activeSymbolsSet);
+
+      if (activeSymbols.length === 0) {
+        addMonitorLog(`[Auto Sync] [${accountName}] 在同步时间段内未发生任何交易成交或资金流转。该账户同步完成。`, "SUCCESS");
+        continue;
+      }
+
+      addMonitorLog(`[Auto Sync] [${accountName}] 检测到上一日共有 ${activeSymbols.length} 个合约发生过变动或存在持仓，开始精准抓取成交记录...`, "INFO");
+
+      // Step 3: Fetch trades for active symbols
+      let allTrades: any[] = [];
+      for (const symbol of activeSymbols) {
+        try {
+          const trades = await binanceSignedRequestWithRetry('/fapi/v1/userTrades', {
+            symbol,
+            startTime: targetPrevDayStart,
+            endTime: targetPrevDayEnd,
+            limit: 1000
+          }, apiKey, apiSecret, baseUrl);
+          if (Array.isArray(trades)) {
+            allTrades = [...allTrades, ...trades];
+          }
+        } catch (err: any) {
+          addMonitorLog(`[Auto Sync] [${accountName}] 获取合约 [${symbol}] 的成交历史失败: ${err.message || err}`, "ERROR");
+        }
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+
+      if (allTrades.length === 0) {
+        addMonitorLog(`[Auto Sync] [${accountName}] 未检索到上一日任何底层的交易成交数据。`, "INFO");
+        continue;
+      }
+
+      // Step 4: De-duplicate and sort trades
+      const uniqueTrades = Array.from(new Map(allTrades.map(t => [t.id, t])).values())
+        .sort((a: any, b: any) => a.time - b.time);
+
+      // Step 5: Exclude active open positions
+      if (activePositions.length > 0) {
+        activePositions.forEach(activePos => {
+          const sym = activePos.symbol;
+          const sideToExclude = activePos.side;
+          let remainingQtyToExclude = activePos.amount;
+
+          for (let idx = uniqueTrades.length - 1; idx >= 0; idx--) {
+            if (remainingQtyToExclude <= 1e-8) break;
+            const t = uniqueTrades[idx] as any;
+            if (t.symbol.toUpperCase() === sym && t.side === sideToExclude) {
+              const qty = parseFloat(t.qty);
+              if (qty <= remainingQtyToExclude + 1e-8) {
+                t.exclude = true;
+                remainingQtyToExclude -= qty;
+              } else {
+                t.qty = (qty - remainingQtyToExclude).toString();
+                remainingQtyToExclude = 0;
+              }
+            }
+          }
+        });
+      }
+
+      const filteredTrades = uniqueTrades.filter((t: any) => !t.exclude);
+
+      // Step 6: 3-second interval batch order merging
+      const mergedTrades: any[] = [];
+      const aggregateGroup = (group: any[]): any => {
+        if (group.length === 1) return group[0];
+        let totalQty = 0;
+        let totalCost = 0;
+        let totalPnl = 0;
+        let totalCommission = 0;
+
+        group.forEach(g => {
+          const q = parseFloat(g.qty);
+          totalQty += q;
+          totalCost += parseFloat(g.price) * q;
+          totalPnl += parseFloat(g.realizedPnl || '0');
+          totalCommission += parseFloat(g.commission || '0');
+        });
+
+        const avgPrice = totalQty > 0 ? totalCost / totalQty : 0;
+        return {
+          ...group[0],
+          qty: totalQty.toString(),
+          price: avgPrice.toString(),
+          realizedPnl: totalPnl.toString(),
+          commission: totalCommission.toString(),
+          time: group[0].time,
+          id: group.map(g => g.id).join('_'),
+        };
+      };
+
+      if (filteredTrades.length > 0) {
+        let currentGroup: any[] = [filteredTrades[0]];
+        for (let idx = 1; idx < filteredTrades.length; idx++) {
+          const current = filteredTrades[idx];
+          const lastInGroup = currentGroup[currentGroup.length - 1];
+
+          const sameSymbol = current.symbol === lastInGroup.symbol;
+          const sameSide = current.side === lastInGroup.side;
+          const withinThreeSecs = (current.time - lastInGroup.time) <= 3000;
+
+          if (sameSymbol && sameSide && withinThreeSecs) {
+            currentGroup.push(current);
+          } else {
+            mergedTrades.push(aggregateGroup(currentGroup));
+            currentGroup = [current];
+          }
+        }
+        if (currentGroup.length > 0) {
+          mergedTrades.push(aggregateGroup(currentGroup));
+        }
+      }
+
+      // Step 7: Match open & close trades by symbol
+      const groupedTrades: { [key: string]: any[] } = {};
+      mergedTrades.forEach(t => {
+        if (!groupedTrades[t.symbol]) groupedTrades[t.symbol] = [];
+        groupedTrades[t.symbol].push(t);
+      });
+
+      const segmentMatchedHistory: any[] = [];
+      const EPSILON = 1e-8;
+
+      Object.keys(groupedTrades).forEach(symbol => {
+        const trades = groupedTrades[symbol];
+        const parsedTrades = trades.map(t => ({
+          ...t,
+          remainingQty: parseFloat(t.qty),
+          originalQty: parseFloat(t.qty),
+          commissionVal: parseFloat(t.commission || '0'),
+          realizedPnlVal: parseFloat(t.realizedPnl || '0'),
+        }));
+
+        for (let idx = parsedTrades.length - 1; idx >= 0; idx--) {
+          const closeTrade = parsedTrades[idx];
+          if (closeTrade.remainingQty < EPSILON) continue;
+
+          const closeSide = closeTrade.side;
+          const openSide = closeSide === 'BUY' ? 'SELL' : 'BUY';
+
+          const matchedCloseTrades: any[] = [];
+          const matchedOpenTrades: any[] = [];
+          let qtyToMatch = closeTrade.remainingQty;
+
+          matchedCloseTrades.push({ trade: closeTrade, qty: qtyToMatch });
+          closeTrade.remainingQty = 0;
+
+          for (let j = idx - 1; j >= 0; j--) {
+            if (qtyToMatch < EPSILON) break;
+            const openTrade = parsedTrades[j];
+            if (openTrade.side === openSide && openTrade.remainingQty > EPSILON) {
+              const takeQty = Math.min(qtyToMatch, openTrade.remainingQty);
+              matchedOpenTrades.push({ trade: openTrade, qty: takeQty });
+              openTrade.remainingQty -= takeQty;
+              qtyToMatch -= takeQty;
+            }
+          }
+
+          if (matchedOpenTrades.length > 0) {
+            let sumCommission = 0;
+            let sumRealizedPnl = 0;
+            let openCost = 0;
+            let openQty = 0;
+            let closeRevenue = 0;
+            let closeQty = 0;
+            let earliestOpenTime = Infinity;
+            let latestCloseTime = -Infinity;
+
+            matchedOpenTrades.forEach(m => {
+              const fraction = m.qty / m.trade.originalQty;
+              sumCommission += m.trade.commissionVal * fraction;
+              sumRealizedPnl += m.trade.realizedPnlVal * fraction;
+              openQty += m.qty;
+              openCost += parseFloat(m.trade.price) * m.qty;
+              earliestOpenTime = Math.min(earliestOpenTime, m.trade.time);
+            });
+
+            matchedCloseTrades.forEach(m => {
+              const fraction = m.qty / m.trade.originalQty;
+              sumCommission += m.trade.commissionVal * fraction;
+              sumRealizedPnl += m.trade.realizedPnlVal * fraction;
+              closeQty += m.qty;
+              closeRevenue += parseFloat(m.trade.price) * m.qty;
+              latestCloseTime = Math.max(latestCloseTime, m.trade.time);
+            });
+
+            const entryPrice = openQty > 0 ? openCost / openQty : 0;
+            const exitPrice = closeQty > 0 ? closeRevenue / closeQty : 0;
+
+            const posIncome = allIncome.filter(inc => 
+              inc.symbol.toUpperCase() === symbol.toUpperCase() && 
+              inc.time >= earliestOpenTime - 5000 && 
+              inc.time <= latestCloseTime + 5000
+            );
+
+            const fundingFee = posIncome
+              .filter(inc => inc.incomeType === 'FUNDING_FEE')
+              .reduce((sum, inc) => sum + parseFloat(inc.income), 0);
+
+            const finalPnl = sumRealizedPnl - sumCommission + fundingFee;
+
+            segmentMatchedHistory.push({
+              id: accountName + '_' + closeTrade.id + '_' + matchedOpenTrades.map(o => o.trade.id).join('_'),
+              symbol: symbol,
+              side: openSide,
+              positionSide: closeTrade.positionSide || (openSide === 'BUY' ? 'LONG' : 'SHORT'),
+              entryPrice: entryPrice,
+              exitPrice: exitPrice,
+              amount: openQty,
+              tradePnl: sumRealizedPnl,
+              commission: sumCommission,
+              fundingFee: fundingFee,
+              pnl: finalPnl,
+              pnlPercent: 0,
+              openTime: earliestOpenTime,
+              closeTime: latestCloseTime,
+              timestamp: latestCloseTime,
+              account: accountName
+            });
+          }
+        }
+      });
+
+      // Step 8: Second pass: merge same open batch positions within 30 seconds
+      const segmentMergedHistory: any[] = [];
+      const openTimeMergeThresholdMs = 30000;
+      const sortedSegment = [...segmentMatchedHistory].sort((a, b) => a.openTime - b.openTime);
+
+      for (const item of sortedSegment) {
+        const existing = segmentMergedHistory.find(h => 
+          h.symbol.toUpperCase() === item.symbol.toUpperCase() &&
+          h.side === item.side &&
+          h.positionSide === item.positionSide &&
+          Math.abs(h.openTime - item.openTime) <= openTimeMergeThresholdMs
+        );
+
+        if (existing) {
+          const originalQty = existing.amount;
+          const itemQty = item.amount;
+          const combinedQty = originalQty + itemQty;
+
+          if (combinedQty > 0) {
+            existing.entryPrice = (existing.entryPrice * originalQty + item.entryPrice * itemQty) / combinedQty;
+            existing.exitPrice = (existing.exitPrice * originalQty + item.exitPrice * itemQty) / combinedQty;
+          }
+
+          existing.amount = combinedQty;
+          existing.tradePnl += item.tradePnl;
+          existing.commission += item.commission;
+          existing.fundingFee += item.fundingFee;
+          existing.pnl += item.pnl;
+          existing.openTime = Math.min(existing.openTime, item.openTime);
+          existing.closeTime = Math.max(existing.closeTime, item.closeTime);
+          existing.timestamp = Math.max(existing.timestamp, item.timestamp);
+          existing.id = `${existing.id}_${item.id}`;
+        } else {
+          segmentMergedHistory.push({ ...item });
+        }
+      }
+
+      // Step 9: Save positions to SQLite DB in a single safe transaction
+      if (segmentMergedHistory.length > 0) {
+        const insertStmt = db.prepare(`
+          INSERT OR REPLACE INTO position_history (
+            id, symbol, side, positionSide, entryPrice, exitPrice, amount, 
+            tradePnl, commission, fundingFee, pnl, pnlPercent, openTime, closeTime, timestamp, account
+          ) VALUES (
+            @id, @symbol, @side, @positionSide, @entryPrice, @exitPrice, @amount,
+            @tradePnl, @commission, @fundingFee, @pnl, @pnlPercent, @openTime, @closeTime, @timestamp, @account
+          )
+        `);
+
+        const tx = db.transaction((items) => {
+          for (const item of items) {
+            insertStmt.run(item);
+          }
+        });
+
+        tx(segmentMergedHistory);
+        addMonitorLog(`[Auto Sync] 账户 [${accountName}] 对账分析成功！同步生成并持久化了 ${segmentMergedHistory.length} 条全新历史闭环仓位。`, "SUCCESS");
+      } else {
+        addMonitorLog(`[Auto Sync] 账户 [${accountName}] 在上一日没有可生成的闭环交易历史。`, "INFO");
+      }
+
+    } catch (err: any) {
+      console.error(`[Auto Sync] [${accountName}] Sync Process Failed:`, err);
+      addMonitorLog(`[Auto Sync] 账户 [${accountName}] 数据抓取/平仓匹配失败: ${err.message || err}`, "ERROR");
+    }
+
+    // Rate-limiting delay before the next account to protect Binance weights
+    if (i < accounts.length - 1) {
+      addMonitorLog(`[Auto Sync] 防限速避让：等待 3 秒后继续同步下一个账户...`, "INFO");
+      await new Promise(resolve => setTimeout(resolve, 3000));
+    }
+  }
+
+  addMonitorLog(`[Auto Sync] 每日自动定时同步任务全部圆满完成！`, "SUCCESS");
+}
+
+function initDailyAutoSync() {
+  console.log("[Auto Sync Initializer] Daily position history auto-sync initialized (Checked every 30 seconds).");
+  
+  setInterval(async () => {
+    const now = new Date();
+    const localHour = now.getHours();
+    const localMinute = now.getMinutes();
+
+    const utc8Date = new Date(now.getTime() + (8 * 60 + now.getTimezoneOffset()) * 60000);
+    const cstHour = utc8Date.getHours();
+    const cstMinute = utc8Date.getMinutes();
+
+    let triggerSync = false;
+    let syncBaseDateStr = "";
+    let syncTimezone = "";
+
+    if (localHour === 6 && localMinute === 18) {
+      const yyyy = now.getFullYear();
+      const mm = String(now.getMonth() + 1).padStart(2, '0');
+      const dd = String(now.getDate()).padStart(2, '0');
+      syncBaseDateStr = `${yyyy}-${mm}-${dd}_local`;
+      triggerSync = true;
+      syncTimezone = "Local Server Time";
+    } else if (cstHour === 6 && cstMinute === 18) {
+      const yyyy = utc8Date.getFullYear();
+      const mm = String(utc8Date.getMonth() + 1).padStart(2, '0');
+      const dd = String(utc8Date.getDate()).padStart(2, '0');
+      syncBaseDateStr = `${yyyy}-${mm}-${dd}_cst`;
+      triggerSync = true;
+      syncTimezone = "China Standard Time (UTC+8)";
+    }
+
+    if (!triggerSync) return;
+
+    try {
+      const row = db.prepare("SELECT value FROM settings WHERE key = ?").get("last_auto_sync_date") as { value: string } | undefined;
+      if (row && row.value === syncBaseDateStr) {
+        return;
+      }
+
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run("last_auto_sync_date", syncBaseDateStr);
+      
+      addMonitorLog(`[Auto Sync] 触发每日自动同步定时任务（触发时区: ${syncTimezone}, 批次标识: ${syncBaseDateStr}）`, "INFO");
+
+      executeDailyAutoSync(syncTimezone, now, utc8Date).catch(err => {
+        console.error("[Auto Sync Error] Execution failed:", err);
+        addMonitorLog(`[Auto Sync Error] 定时自动同步执行失败: ${err.message || err}`, "ERROR");
+      });
+
+    } catch (e: any) {
+      console.error("[Auto Sync] Database check/save failed:", e);
+    }
+  }, 30000);
+}
+
+// Start daily auto sync engine
+initDailyAutoSync();
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
